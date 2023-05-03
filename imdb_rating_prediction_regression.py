@@ -18,8 +18,8 @@ from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_classif
 import numpy as np
 from seaborn import load_dataset, pairplot
-from sklearn.ensemble import RandomForestRegressor # My second method of evaluation is random forest trees.
-from sklearn.tree import export_graphviz
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn import preprocessing
 import pydot
 import warnings
 warnings.filterwarnings('ignore')
@@ -45,6 +45,7 @@ print(master_df.head)
 # endYear seems to be exclusively newline values. We will remove that column.
 working_df = master_df.copy()
 working_df = working_df.drop("endYear", axis = 1)
+working_df = working_df.drop("tconst", axis = 1)
 
 # Other columns, mainly startYear, runtimeMinutes, and genres seem to have some newline values. Let's remove the rows that have these values.
 remove_newlines = working_df[working_df["startYear"] == '\\N'].index
@@ -277,3 +278,22 @@ plt.ylabel("Count")
 plt.show() # There is still some right skew but otherwise this looks like a reasonable distriubtion.
 
 print(working_df.describe()) # The final dataset has 885,527 rows and 6 columns.
+
+# Let's start with a multiple linear regression model. The target is of course averageRating and the features are all other columns.
+#from sklearn import linear_model
+import statsmodels.api as sm
+working_df["startYear"] = pd.to_numeric(working_df["startYear"])
+working_df["runtimeMinutes"] = pd.to_numeric(working_df["runtimeMinutes"])
+x = working_df.drop('averageRating', axis = 1)
+y = working_df['averageRating']
+
+
+#add constant to predictor variables
+#x -= np.average(x)
+x = sm.add_constant(x)
+
+#fit linear regression model
+model = sm.OLS(y, x).fit()
+
+#view model summary
+print(model.summary()) # The R-Squared is 0.095 and none of the features seem to be very important. Let us check for collinearity.
