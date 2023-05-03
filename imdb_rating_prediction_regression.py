@@ -22,9 +22,11 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn import preprocessing
 import pydot
 import warnings
+import statsmodels.api as sm
+import scipy.stats as stats
+from patsy import dmatrices
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 warnings.filterwarnings('ignore')
-
-#def main():
 
 basic_info = pd.read_csv('basics.tsv', sep = '\t')
 rating_info = pd.read_csv('ratings.tsv', sep = '\t')
@@ -35,14 +37,11 @@ print(rating_info.shape)
 master_df = pd.merge(rating_info, basic_info, on = ["tconst"]) # We must join the basics and ratings tables on the unique movie ID ('tconst').
 print(master_df.shape)
 
-#if __name__ == '__main__':
-#	main()
-
 # Let's take a look at some of our data.
 
 print(master_df.head)
 
-# endYear seems to be exclusively newline values. We will remove that column.
+# endYear seems to be exclusively newline values. We will remove that column. We will also remove tconst as it is just the movie ID.
 working_df = master_df.copy()
 working_df = working_df.drop("endYear", axis = 1)
 working_df = working_df.drop("tconst", axis = 1)
@@ -78,7 +77,7 @@ print(title_types)
 # isAdult is supposed to be a boolean field yet it has 4 different values. Let's see what is happening here.
 
 isAdult_types = set(working_df["isAdult"])
-print(isAdult_types) # {0, 1, '0', '1'}
+print(isAdult_types) # {0, 1, '0', '1'} are the possible values. We will change '0' -> 0 and '1' -> 1.
 
 isAdult_dictionary = {0 : 0, '0': 0, 1 : 1, '1' : 1}
 working_df['isAdult'] = working_df['isAdult'].apply(lambda x: isAdult_dictionary[x])
@@ -132,8 +131,10 @@ print(working_df.head)
 
 # Let's perform some exploratory data analysis to remove outliers and see what the features look like.
 # Let's start with some histograms of the features.
-import scipy.stats as stats
+working_df["startYear"] = pd.to_numeric(working_df["startYear"])
+working_df["runtimeMinutes"] = pd.to_numeric(working_df["runtimeMinutes"])
 print(working_df.describe())
+
 
 plt.hist(working_df["averageRating"])
 plt.title("Average Rating Histogram")
@@ -253,6 +254,22 @@ plt.ylabel("Count")
 plt.xticks(np.arange(min(x_values), max(x_values)+1, 1.0))
 plt.show() # This looks pretty normal and evenly distributed.
 
+# For the startYear column I believe it will be beneficial to change the column
+# such that it is the number of years since 1874 the work was released.
+# I chose 1874 as it is the earliest year present in the data.
+
+years_since_1874 = []
+
+for row in working_df.itertuples():
+  years_since_1874.append(row[-4] - 1874)
+
+
+working_df = working_df.drop("startYear", axis = 1)
+
+working_df["startYear"] = years_since_1874
+print(working_df.shape)
+print(working_df.head)
+
 # The final feature to examine is length_title. This is a fairly straightforward reduction.
 # Z-scores will be used again to eliminate outliers.
 
@@ -277,23 +294,53 @@ plt.xlabel("Title Length")
 plt.ylabel("Count")
 plt.show() # There is still some right skew but otherwise this looks like a reasonable distriubtion.
 
-print(working_df.describe()) # The final dataset has 885,527 rows and 6 columns.
+print(working_df.describe()) # The final dataset has 885,527 rows and 8 columns.
 
 # Let's start with a multiple linear regression model. The target is of course averageRating and the features are all other columns.
 #from sklearn import linear_model
-import statsmodels.api as sm
-working_df["startYear"] = pd.to_numeric(working_df["startYear"])
-working_df["runtimeMinutes"] = pd.to_numeric(working_df["runtimeMinutes"])
-x = working_df.drop('averageRating', axis = 1)
+X = working_df.drop('averageRating', axis = 1)
 y = working_df['averageRating']
 
 
-#add constant to predictor variables
-#x -= np.average(x)
-x = sm.add_constant(x)
-
-#fit linear regression model
-model = sm.OLS(y, x).fit()
-
-#view model summary
+# Here we add a constant to the features.
+X = sm.add_constant(X)
+model = sm.OLS(y, X).fit()
 print(model.summary()) # The R-Squared is 0.095 and none of the features seem to be very important. Let us check for collinearity.
+
+y, X = dmatrices('averageRating ~ numVotes+titleType+isAdult+startYear+runtimeMinutes+genres+length_title', data = working_df, return_type = 'dataframe')
+vif_df = pd.DataFrame()
+vif_df['variable'] = X.columns
+vif_df['VIF'] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+print(vif_df) # All of the VIF values are close to 1, so collinearity is not the problem. A linear model does not seem to be ideal.
+# Let's create a correlation matrix.
+corr_matrix = working_df.corr()
+print(corr_matrix) # numVotes has no relation at all to the target and length_title only has a 0.03 correspondence score. Let's remove these and see if our model improves.
+
+X = working_df.drop(['averageRating', 'numVotes', 'length_title'], axis = 1)
+X = sm.add_constant(X)
+model = sm.OLS(y, X).fit()
+print(model.summary()) # The model is almost exactly the same.
+
+# Next, let's try a polynomial regression model.
+
+from sklearn.preprocessing import PolynomialFeatures
+
+X = working_df.drop('averageRating', axis = 1)
+y = working_df['averageRating']
+
+print(X.shape)
+print(y.shape)
+
+polynomial_features = PolynomialFeatures(degree = 3)
+xp = polynomial_features.fit_transform(X)
+print(xp.shape)
+
+poly_model = sm.OLS(y, xp).fit()
+ypred = poly_model.predict(xp) 
+
+print(ypred.shape)
+
+print(poly_model.summary())
+# The r-squared score has more than doubled using polynomial regression (0.094 -> 0.195).
+# We could increase the number of degrees to possibly increase the r-squared more but that would require a lot more computation power.
+# We also run the risk of overfitting. Overall the polynomial regression model is much better than the MLR model.
